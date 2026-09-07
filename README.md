@@ -14,11 +14,30 @@ pnpm add github:ВАШ_НИК/url-pattern-builder
 
 > При установке из git папка `dist` собирается автоматически (скрипт `prepare`), отдельная сборка не нужна.
 
-Репозиторий приватный — доступ регулируется правами самого репозитория (коллаборатор, deploy-ключ или токен).
+## Обзор
+
+Функции делятся на две группы.
+
+**Разбор и сборка** — базовая цепочка «ссылка → regex»:
+
+- `stripDomain(url)` — срезать домен, оставить путь
+- `parseUrl(url)` — разобрать путь на части
+- `buildPattern(parsed, options?)` — собрать строку regex
+
+**Логика конструктора** — для интерактивного UI, где пользователь настраивает правило кликами:
+
+- `createInitialState(url)` — из ссылки собрать начальное состояние
+- `setSegmentMode` / `setSegmentValue` — менять сегмент
+- `addAlt` / `setAlt` / `removeAlt` — менять значения режима «или»
+- `matches(parsed, options, url)` — подходит ли ссылка под правило
+- `hasTail(parsed)` — есть ли в ссылке параметр после «?»
+- `isValidPattern(pattern)` — корректна ли строка regex
+
+Плюс данные `SEGMENT_MODES` (список режимов с подписями) и все TypeScript-типы.
 
 ## Быстрый старт
 
-Три функции работают по цепочке: срезать домен → разобрать путь → собрать regex.
+Три базовые функции работают по цепочке: срезать домен → разобрать путь → собрать regex.
 
 ```ts
 import { stripDomain, parseUrl, buildPattern } from 'url-pattern-builder'
@@ -38,7 +57,7 @@ re.test('/blog/post') // true
 re.test('/other') // false
 ```
 
-## Функции
+## Разбор и сборка
 
 ### `stripDomain(raw: string): string`
 
@@ -55,8 +74,6 @@ stripDomain('blog') // 'blog'        (не домен, не трогаем)
 
 Разбирает путь на части. На вход ожидает уже очищенный путь (результат `stripDomain`).
 
-Возвращает объект `ParsedUrl`:
-
 ```ts
 parseUrl('/blog/post/?id=5')
 // {
@@ -69,7 +86,7 @@ parseUrl('/blog/post/?id=5')
 // }
 ```
 
-Каждый сегмент по умолчанию получает режим `exact` — вы меняете его сами перед сборкой regex (см. режимы сегментов ниже).
+Каждый сегмент по умолчанию получает режим `exact` — вы меняете его сами перед сборкой regex.
 
 ### `buildPattern(parsed: ParsedUrl, options?: BuildOptions): string`
 
@@ -78,7 +95,7 @@ parseUrl('/blog/post/?id=5')
 ```ts
 buildPattern(parsed) // настройки по умолчанию
 buildPattern(parsed, {
-	pathLength: 'any', // с настройками
+	pathLength: 'any',
 	tailMode: 'exists',
 	tailParam: 'id',
 })
@@ -90,9 +107,85 @@ buildPattern(parsed, {
 { pathLength: 'exact', tailMode: 'ignore', tailParam: 'oid' }
 ```
 
+## Логика конструктора
+
+Эти функции нужны, когда вы строите интерактивный UI. Все операции с сегментами **чистые**: принимают текущий массив и возвращают новый, ничего не мутируя — это удобно для React-состояния.
+
+### `createInitialState(url: string): ConstructorState`
+
+Из ссылки собирает начальное состояние конструктора: разбирает путь, определяет хвост и режим по умолчанию. Заменяет ручной разбор при вводе ссылки.
+
+```ts
+createInitialState('/blog/post/?id=5')
+// {
+//   segments: [ { value: 'blog', mode: 'exact', alts: [] }, ... ],
+//   tail: { name: 'id', value: '5' },
+//   tailMode: 'exists',   // есть параметр → 'exists', иначе 'ignore'
+//   tailParam: 'id'       // имя параметра из ссылки, иначе 'oid'
+// }
+```
+
+### Операции с сегментами
+
+Каждая принимает массив сегментов и индекс, возвращает **новый** массив.
+
+```ts
+import {
+	setSegmentMode,
+	setSegmentValue,
+	addAlt,
+	setAlt,
+	removeAlt,
+} from 'url-pattern-builder'
+
+// сменить режим сегмента №1 на 'num'
+const next = setSegmentMode(segments, 1, 'num')
+
+// изменить значение сегмента №0
+setSegmentValue(segments, 0, 'catalog')
+
+// работа с режимом «или» (alt)
+addAlt(segments, 0) //             + пустое поле «или»
+setAlt(segments, 0, 1, 'news') //  задать 2-е значение «или»
+removeAlt(segments, 0, 1) //       убрать 2-е значение «или»
+```
+
+Особенность `setSegmentMode`: при переключении на `alt` он сам добавляет одно пустое поле, если их ещё нет — чтобы пользователю было куда вписать альтернативу.
+
+### `matches(parsed: ParsedUrl, options: BuildOptions, url: string): boolean`
+
+Собирает regex из состояния и проверяет, подходит ли под него ссылка. Внутри ловит ошибки некорректного regex и в этом случае возвращает `false` — можно звать безопасно.
+
+```ts
+matches(
+	parsed,
+	{ pathLength: 'exact', tailMode: 'ignore', tailParam: 'oid' },
+	'/blog/post',
+)
+// true | false
+```
+
+### `hasTail(parsed: ParsedUrl): boolean`
+
+Есть ли в разобранной ссылке параметр после «?». Удобно, чтобы решать, показывать ли в UI блок настройки хвоста.
+
+```ts
+hasTail(parseUrl('/blog?id=5')) // true
+hasTail(parseUrl('/blog')) // false
+```
+
+### `isValidPattern(pattern: string): boolean`
+
+Проверяет, что строка — корректное регулярное выражение (конструктор `RegExp` не бросает ошибку).
+
+```ts
+isValidPattern('^/blog/\\d+$') // true
+isValidPattern('^/blog/(') // false — незакрытая скобка
+```
+
 ## Режимы сегментов
 
-Каждый сегмент пути (`segment.mode`) может совпадать по-разному. Меняйте `mode` у нужного сегмента перед вызовом `buildPattern`.
+Каждый сегмент пути (`segment.mode`) может совпадать по-разному.
 
 | Режим   | Что значит        | Пример regex-части        | Совпадает            |
 | ------- | ----------------- | ------------------------- | -------------------- |
@@ -102,24 +195,6 @@ buildPattern(parsed, {
 | `alt`   | одно из значений  | `(?:blog\|news\|article)` | любое из списка      |
 
 Для режима `alt` дополнительные значения берутся из `segment.alts` (массив строк) плюс основное `segment.value`.
-
-```ts
-const parsed = parseUrl('/blog/post')
-
-// первый сегмент — одно из трёх, второй — только число
-parsed.segments[0].mode = 'alt'
-parsed.segments[0].alts = ['news', 'article']
-parsed.segments[1].mode = 'num'
-
-const pattern = buildPattern(parsed)
-// → '^/(?:blog|news|article)/\\d+/?(?:\\?.*)?$'
-
-const re = new RegExp(pattern)
-re.test('/blog/12') // true
-re.test('/news/7') // true
-re.test('/article/99') // true
-re.test('/shop/5') // false
-```
 
 Готовый список режимов с человеческими подписями экспортируется как `SEGMENT_MODES` — удобно для построения UI:
 
@@ -142,24 +217,6 @@ import { SEGMENT_MODES } from 'url-pattern-builder'
 | `exact`  | ровно столько же частей, что в ссылке | не подходит        |
 | `any`    | разрешены вложенные `/части/`         | подходит           |
 
-```ts
-const parsed = parseUrl('/blog/post')
-
-buildPattern(parsed, {
-	pathLength: 'exact',
-	tailMode: 'ignore',
-	tailParam: 'oid',
-})
-// '/blog/post/extra' → false
-
-buildPattern(parsed, {
-	pathLength: 'any',
-	tailMode: 'ignore',
-	tailParam: 'oid',
-})
-// '/blog/post/extra' → true
-```
-
 ## Режимы хвоста (query после `?`)
 
 Опция `tailMode` управляет проверкой query-параметров. Имя искомого параметра задаётся через `tailParam`.
@@ -170,59 +227,50 @@ buildPattern(parsed, {
 | `exists` | должен быть параметр с числом          | `?id=5` — да, `?id=abc` — нет         |
 | `exact`  | точное значение параметра              | только `?id=5`, но не `?id=9`         |
 
-```ts
-const parsed = parseUrl('/blog?id=5')
+## Пример: сборка UI на React
 
-// ignore — query не важен
-buildPattern(parsed, {
-	pathLength: 'exact',
-	tailMode: 'ignore',
-	tailParam: 'id',
-})
-// /blog → true, /blog?id=5 → true
+Логика вся в пакете — компонент только хранит состояние и дёргает функции.
 
-// exists — параметр id обязателен и должен быть числом
-buildPattern(parsed, {
-	pathLength: 'exact',
-	tailMode: 'exists',
-	tailParam: 'id',
-})
-// /blog?id=5 → true, /blog?id=abc → false, /blog → false
+```tsx
+import { useState } from 'react'
+import {
+	createInitialState,
+	setSegmentMode,
+	buildPattern,
+	matches,
+	SEGMENT_MODES,
+} from 'url-pattern-builder'
+import type { ConstructorState, SegmentMode } from 'url-pattern-builder'
 
-// exact — ровно id=5
-buildPattern(parsed, {
-	pathLength: 'exact',
-	tailMode: 'exact',
-	tailParam: 'id',
-})
-// /blog?id=5 → true, /blog?id=9 → false
-```
+function Builder() {
+	const [state, setState] = useState<ConstructorState>({
+		segments: [],
+		tail: null,
+		tailMode: 'ignore',
+		tailParam: 'oid',
+	})
 
-## Полный пример
+	// при вводе ссылки — пакет собирает начальное состояние
+	function onUrl(url: string) {
+		setState(createInitialState(url))
+	}
 
-Собрать правило: раздел `blog` или `news`, затем числовой id, путь ровно такой длины, обязательный параметр `oid` с числом.
+	// клик по кнопке режима — пакет возвращает новые сегменты
+	function onMode(i: number, mode: SegmentMode) {
+		setState((s) => ({ ...s, segments: setSegmentMode(s.segments, i, mode) }))
+	}
 
-```ts
-import { stripDomain, parseUrl, buildPattern } from 'url-pattern-builder'
+	const options = {
+		pathLength: 'exact' as const,
+		tailMode: state.tailMode,
+		tailParam: state.tailParam,
+	}
 
-const path = stripDomain('https://site.com/blog/42?oid=100')
-const parsed = parseUrl(path)
+	const pattern = buildPattern(state, options)
+	const ok = matches(state, options, '/blog/12')
 
-parsed.segments[0].mode = 'alt'
-parsed.segments[0].alts = ['news']
-parsed.segments[1].mode = 'num'
-
-const pattern = buildPattern(parsed, {
-	pathLength: 'exact',
-	tailMode: 'exists',
-	tailParam: 'oid',
-})
-
-const re = new RegExp(pattern)
-re.test('/blog/42?oid=100') // true
-re.test('/news/7?oid=3') // true
-re.test('/blog/42') // false  (нет oid)
-re.test('/blog/abc?oid=1') // false  (id не число)
+	// ...разметка выдаёт SEGMENT_MODES кнопками и показывает pattern
+}
 ```
 
 ## Экспортируемые типы
@@ -234,6 +282,7 @@ import type {
 	Tail, // { name: string; value: string }
 	Segment, // { value: string; mode: SegmentMode; alts: string[] }
 	ParsedUrl, // { segments: Segment[]; hasTrailingSlash: boolean; tail: Tail | null }
+	ConstructorState, // { segments: Segment[]; tail: Tail | null; tailMode: TailMode; tailParam: string }
 	SegmentMode, // 'exact' | 'any' | 'num' | 'alt'
 	PathLength, // 'exact' | 'any'
 	TailMode, // 'ignore' | 'exists' | 'exact'
