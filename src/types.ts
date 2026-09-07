@@ -33,3 +33,10 @@ export interface BuildOptions {
 	tailMode: TailMode
 	tailParam: string
 }
+
+export interface ConstructorState {
+	segments: Segment[]
+	tail: Tail | null
+	tailMode: TailMode
+	tailParam: string
+}
